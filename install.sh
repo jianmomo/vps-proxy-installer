@@ -20,15 +20,28 @@ prompt() {
 
 menu() {
     while :; do
-        printf '\n1. 安装 VLESS + TCP + XTLS Vision + TLS\n2. 安装 Hysteria 2 + QUIC + TLS（UDP）\n0. 退出\n' >&3
-        prompt '请选择 [1/2/0]：'
+        printf '\n1. 安装 VLESS + TCP + XTLS Vision + TLS\n2. 安装 Hysteria 2 + QUIC + TLS（UDP）\n3. 同时部署 VLESS 和 Hysteria 2\n0. 退出\n' >&3
+        prompt '请选择 [1/2/3/0]：'
         case "$REPLY" in
-            1) protocol=vless; transport=TCP; version=$XRAY_VERSION; return ;;
-            2) protocol=hy2; transport=UDP; version=$HY2_VERSION; return ;;
+            1) selected_protocols=(vless); return ;;
+            2) selected_protocols=(hy2); return ;;
+            3) selected_protocols=(vless hy2); return ;;
             0) exit 0 ;;
-            *) printf '请输入 1、2 或 0。\n' >&3 ;;
+            *) printf '请输入 1、2、3 或 0。\n' >&3 ;;
         esac
     done
+}
+
+select_protocol() {
+    protocol=$1
+    case "$protocol" in
+        vless) protocol_name=VLESS; transport=TCP; version=$XRAY_VERSION ;;
+        hy2) protocol_name='Hysteria 2'; transport=UDP; version=$HY2_VERSION ;;
+    esac
+    target="/opt/vps-proxy-$protocol"
+    account="vps-proxy-$protocol"
+    unit="vps-proxy-$protocol.service"
+    unit_file="/etc/systemd/system/$unit"
 }
 
 normalize_host() {
@@ -217,14 +230,16 @@ collect_settings() {
         ipv6_addresses=$(ip -6 -o addr show scope global) || die '无法检查本机 IPv6。'
         [[ -n "$ipv6_addresses" ]] || die '本机没有可用于直连的 IPv6 地址。'
     fi
-    prompt '本机监听端口 [443]：'
+    prompt "$protocol_name 本机监听端口（$transport）[443]："
     listen_port=$(normalize_port "${REPLY:-443}") || die '监听端口须为 1–65535。'
     check_port
-    prompt "客户端连接的公网端口 [$listen_port]："
+    prompt "$protocol_name 客户端连接的公网端口（$transport）[$listen_port]："
     public_port=$(normalize_port "${REPLY:-$listen_port}") || die '公网端口须为 1–65535。'
     printf '\n1. 复用现有 CA 签发证书\n2. 生成自签证书并在客户端固定指纹\n' >&3
     prompt '证书方式 [1]：'
     tls_name=''
+    cert_file=''
+    key_file=''
     case "${REPLY:-1}" in
         1)
             cert_mode=ca
@@ -398,32 +413,41 @@ certificate_pin() {
     printf '%s\n' "${fingerprint,,}"
 }
 
-print_links() {
-    local pin=$1 primary_name=$tls_name secondary_name=$tls_name
+collect_links() {
+    local primary_name=$tls_name secondary_name=$tls_name
     if [[ "$cert_mode" == ca ]]; then
         # 域名与证书名一致时可由客户端自动推导，IP 证书显式传验证名。
         if [[ -z "$tls_name" && ( "$host" == *:* || "$host" =~ ^[0-9.]+$ ) ]]; then primary_name=$host; fi
         if [[ -z "$tls_name" && -n "$secondary" ]]; then secondary_name=$secondary; fi
     fi
-    printf '\n服务已启动并监听本机端口。客户端连通性待外部验证。\n' >&3
-    print_mapping
     if [[ "$cert_mode" == self ]]; then
-        printf '自签节点请在 v2rayN 选择 Xray 核心，保留证书指纹。\n' >&3
+        has_self_signed=1
     fi
-    printf '\nv2rayN 主连接导入链接\n' >&3
-    render_link "$protocol" "$host" "$public_port" "$credential" "$primary_name" "$pin" >&3
+    main_links+=("$(render_link "$protocol" "$host" "$public_port" "$credential" "$primary_name" "$pin")")
     if [[ -n "$secondary" ]]; then
-        printf '\nv2rayN IPv6 直连导入链接\n' >&3
-        render_link "$protocol" "$secondary" "$listen_port" "$credential" "$secondary_name" "$pin" >&3
+        ipv6_links+=("$(render_link "$protocol" "$secondary" "$listen_port" "$credential" "$secondary_name" "$pin")")
+    fi
+}
+
+print_links() {
+    if (( has_self_signed )); then
+        printf '\n自签节点请在 v2rayN 选择 Xray 核心，保留证书指纹。\n' >&3
+    fi
+    printf '\nv2rayN 主连接导入链接（%s 条）\n' "${#main_links[@]}" >&3
+    printf '%s\n' "${main_links[@]}" >&3
+    if (( ${#ipv6_links[@]} )); then
+        printf '\n额外的 IPv6 直连导入链接\n' >&3
+        printf '%s\n' "${ipv6_links[@]}" >&3
     fi
     printf '\n在 VPS 外选中该节点并使用全局代理模式，经 v2rayN 的本地 SOCKS 端口测试（按实际端口替换 10808）：\n' >&3
     printf '%s\n' 'curl --fail --max-time 20 --noproxy "" --proxy socks5h://127.0.0.1:10808 https://api.ipify.org' >&3
     printf '将返回地址与 VPS 上直连同一网址所得的出口地址比对。仅有 IPv6 出口时，两端均改用 https://api6.ipify.org。\n' >&3
 }
 
-reuse_installation() {
-    local path pin='' fragment drop_ins
+load_installation() {
+    local path fragment drop_ins
     local -a state
+    pin=''
     [[ -d "$target" && ! -L "$target" && -f "$unit_file" && ! -L "$unit_file" ]] || die '安装目录或服务单元不完整。'
     for path in state config.json cert.pem key.pem server; do
         [[ -f "$target/$path" && ! -L "$target/$path" ]] || die '已有安装文件不完整。'
@@ -473,8 +497,6 @@ print(value)
 PY
     ) || die '无法从本机配置读取原凭据。'
     is_listening || die "现有服务未监听 $listen_port/$transport。请检查 systemctl status $unit。"
-    printf '检测到本脚本已有安装，使用原凭据。\n' >&3
-    print_links "$pin"
 }
 
 cleanup() {
@@ -513,7 +535,7 @@ cleanup() {
 }
 
 install_service() {
-    local pin='' stage='' stage_inode='' temp_unit='' account_created=0 start_attempted=0 enable_attempted=0
+    local stage='' stage_inode='' temp_unit='' account_created=0 start_attempted=0 enable_attempted=0
     # EXIT trap 在当前子 shell 内运行，安装临时状态在陷阱执行时仍可读。
     trap cleanup EXIT
     trap 'exit 130' INT
@@ -524,7 +546,7 @@ install_service() {
     stage_inode=$(stat -c '%d:%i' -- "$stage")
     stage_binary
     stage_certificate
-    if [[ "$cert_mode" == self ]]; then pin=$(certificate_pin "$stage/cert.pem") || die '无法计算自签证书指纹。'; fi
+    if [[ "$cert_mode" == self ]]; then certificate_pin "$stage/cert.pem" >/dev/null || die '无法计算自签证书指纹。'; fi
     if [[ "$protocol" == vless ]]; then
         credential=$(python3 -c 'import uuid; print(uuid.uuid4())')
     else
@@ -560,40 +582,83 @@ install_service() {
 
     trap - EXIT INT TERM HUP
     rm -- "$temp_unit" || printf '未能清理安装临时文件 %s。\n' "$temp_unit" >&2
-    print_links "$pin"
+}
+
+confirm_installation() {
+    prompt '确认安装 [y/N]：'
+    case "$REPLY" in
+        y|Y|yes|YES) ;;
+        *) printf '已取消。\n' >&3; return 1 ;;
+    esac
+}
+
+lock_installation() {
+    # /run 下的锁在重启时清理；保留同一个 inode，避免并发执行时锁失效。
+    [[ ! -L /run/vps-proxy-installer.lock ]] || die '安装锁路径异常。'
+    exec 8>>/run/vps-proxy-installer.lock
+    flock --nonblock 8 || die '另一个安装正在执行。'
+}
+
+deploy_selection() {
+    local selected field has_self_signed=0
+    local -a pending=() main_links=() ipv6_links=()
+    local -a fields=(host secondary listen_port public_port cert_mode tls_name cert_file key_file)
+    local -A settings=()
+
+    for selected in "${selected_protocols[@]}"; do
+        select_protocol "$selected"
+        check_environment
+        printf '\n配置 %s\n' "$protocol_name" >&3
+        if path_exists "$target"; then
+            load_installation
+            printf '检测到本脚本已有安装，使用原端口和凭据。\n' >&3
+        else
+            check_conflicts
+            collect_settings
+            pending+=("$selected")
+            # 两个协议的设置先保存在内存，收集完毕后统一确认。
+            for field in "${fields[@]}"; do
+                settings["$selected:$field"]=${!field}
+            done
+            printf '\n待安装 %s %s，证书方式：%s。\n' "$protocol_name" "$version" "$cert_mode" >&3
+        fi
+        print_mapping
+    done
+
+    if (( ${#pending[@]} )); then
+        confirm_installation || return 0
+        lock_installation
+        for selected in "${pending[@]}"; do
+            select_protocol "$selected"
+            for field in "${fields[@]}"; do
+                printf -v "$field" '%s' "${settings[$selected:$field]}"
+            done
+            check_conflicts
+            check_port
+            ( install_service )
+            printf '\n%s 已安装。\n' "$protocol_name" >&3
+        done
+    fi
+
+    for selected in "${selected_protocols[@]}"; do
+        select_protocol "$selected"
+        load_installation
+        printf '\n%s\n' "$protocol_name" >&3
+        print_mapping
+        collect_links
+    done
+    printf '\n所选服务已启动并监听本机端口。客户端连通性待外部验证。\n' >&3
+    print_links
 }
 
 main() {
     set -Eeuo pipefail
     export LC_ALL=C PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/sbin:/usr/local/bin
     umask 077
+    local -a selected_protocols=()
     { exec 3<>/dev/tty; } 2>/dev/null || die '请在交互式 Bash 终端运行。'
     menu
-    target="/opt/vps-proxy-$protocol"
-    account="vps-proxy-$protocol"
-    unit="vps-proxy-$protocol.service"
-    unit_file="/etc/systemd/system/$unit"
-    check_environment
-    if path_exists "$target"; then
-        reuse_installation
-        return
-    fi
-    check_conflicts
-    collect_settings
-    printf '\n安装 %s %s，证书方式：%s。\n' "$protocol" "$version" "$cert_mode" >&3
-    print_mapping
-    prompt '确认安装 [y/N]：'
-    case "$REPLY" in
-        y|Y|yes|YES) ;;
-        *) printf '已取消。\n' >&3; return ;;
-    esac
-    # /run 下的锁在重启时清理；保留同一个 inode，避免并发执行时锁失效。
-    [[ ! -L /run/vps-proxy-installer.lock ]] || die '安装锁路径异常。'
-    exec 8>>/run/vps-proxy-installer.lock
-    flock --nonblock 8 || die '另一个安装正在执行。'
-    check_conflicts
-    check_port
-    ( install_service )
+    deploy_selection
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
