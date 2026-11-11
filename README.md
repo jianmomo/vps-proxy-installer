@@ -3,7 +3,7 @@
 在带 systemd 的 Debian 13 LXC 或 Ubuntu 22.04 amd64 VPS 上，用 root 的 Bash 运行。下载地址固定到已验证的脚本提交。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/19bd677f4e4ae986c60e7ef60358d1a3a9057f98/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/800e749246f668565d6f770df5ae61b5ae8e49fd/install.sh)
 ```
 
 - `1` 安装 VLESS + TCP + XTLS Vision + TLS，使用 [Xray v26.11.9](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9)。
