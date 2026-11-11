@@ -500,7 +500,7 @@ cleanup() {
                 rm -f -- "$target/"{server,config.json,cert.pem,key.pem,state} || preserve=1
                 rmdir -- "$target" || preserve=1
             fi
-            if (( account_attempted )); then
+            if (( account_created )); then
                 if getent passwd "$account" >/dev/null; then userdel "$account" || preserve=1; fi
                 if getent group "$account" >/dev/null; then groupdel "$account" || preserve=1; fi
             fi
@@ -513,7 +513,7 @@ cleanup() {
 }
 
 install_service() {
-    local pin='' stage='' stage_inode='' temp_unit='' account_attempted=0 start_attempted=0 enable_attempted=0
+    local pin='' stage='' stage_inode='' temp_unit='' account_created=0 start_attempted=0 enable_attempted=0
     # EXIT trap 在当前子 shell 内运行，安装临时状态在陷阱执行时仍可读。
     trap cleanup EXIT
     trap 'exit 130' INT
@@ -536,8 +536,8 @@ install_service() {
     # 下载后再查一次端口及同类服务，避免覆盖安装等待期间出现的配置。
     check_conflicts
     check_port
-    account_attempted=1
     useradd --system --user-group --no-create-home --home-dir "$target" --shell /usr/sbin/nologin "$account"
+    account_created=1
     chgrp -- "$account" "$stage" "$stage/"{config.json,cert.pem,key.pem}
     chmod 0750 "$stage"
     chmod 0640 "$stage/"{config.json,cert.pem,key.pem}
