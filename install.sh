@@ -133,7 +133,7 @@ check_environment() {
         debian:13|ubuntu:22.04) ;;
         *) die '当前支持 Debian 13 和 Ubuntu 22.04。' ;;
     esac
-    local -a required=(curl openssl sha256sum python3 ss ip flock systemctl pgrep getent useradd userdel groupdel)
+    local -a required=(curl openssl sha256sum python3 ss ip flock systemctl pgrep getent id useradd userdel groupdel)
     [[ "$protocol" != vless ]] || required+=(unzip)
     local -a missing=()
     for cmd in "${required[@]}"; do
@@ -183,9 +183,9 @@ port_sockets() {
     local -a family=()
     [[ -z ${1:-} ]] || family=(-6)
     if [[ "$transport" == TCP ]]; then
-        ss "${family[@]}" -H -ltnp "sport = :$listen_port"
+        ss "${family[@]}" -H -ltnpe "sport = :$listen_port"
     else
-        ss "${family[@]}" -H -uanp "sport = :$listen_port"
+        ss "${family[@]}" -H -uanpe "sport = :$listen_port"
     fi
 }
 
@@ -215,20 +215,28 @@ check_certificate() {
     done
 }
 
+has_local_ipv6() {
+    local addresses
+    addresses=$(ip -6 -o addr show scope global "$@") || die '无法检查本机 IPv6。'
+    [[ -n "$addresses" ]] && grep -Evq '(^|[[:space:]])(tentative|dadfailed)([[:space:]]|$)' <<< "$addresses"
+}
+
 collect_settings() {
-    local first second extra ipv6_addresses default_cert='' default_key=''
+    local first second extra default_cert='' default_key=''
     prompt '连接地址（公网 IPv4、IPv6 或域名，可在后面空格追加一个直连 IPv6）：'
     read -r first second extra <<< "$REPLY"
     [[ -n "$first" && -z "$extra" ]] || die '请输入一个连接地址，或再追加一个 IPv6。'
     host=$(normalize_host "$first") || die '连接地址无效。'
     secondary=''
+    unavailable_secondary=''
     if [[ -n "$second" ]]; then
         secondary=$(normalize_host "$second") || die '附加的 IPv6 地址无效。'
         [[ "$host" != *:* && "$secondary" == *:* ]] || die '附加 IPv6 前需先填写 IPv4 或域名。'
     fi
-    if [[ "$host" == *:* || -n "$secondary" ]]; then
-        ipv6_addresses=$(ip -6 -o addr show scope global) || die '无法检查本机 IPv6。'
-        [[ -n "$ipv6_addresses" ]] || die '本机没有可用于直连的 IPv6 地址。'
+    if [[ -n "$secondary" ]]; then
+        has_local_ipv6 to "$secondary/128" || die "附加的直连 IPv6 [$secondary] 未分配给本机或尚不可用。"
+    elif [[ "$host" == *:* ]]; then
+        has_local_ipv6 || die '本机没有可用的 IPv6 地址。'
     fi
     prompt "$protocol_name 本机监听端口（$transport）[443]："
     listen_port=$(normalize_port "${REPLY:-443}") || die '监听端口须为 1–65535。'
@@ -273,6 +281,8 @@ print_mapping() {
     fi
     if [[ -n "$secondary" ]]; then
         printf '附加 IPv6 直连 [%s]:%s（%s）。\n' "$secondary" "$listen_port" "$transport" >&3
+    elif [[ -n "${unavailable_secondary:-}" ]]; then
+        printf '附加 IPv6 [%s] 当前不可用，已省略对应的直连链接。\n' "$unavailable_secondary" >&3
     fi
 }
 
@@ -376,6 +386,19 @@ WantedBy=multi-user.target
 EOF
 }
 
+matches_listener() {
+    local sockets=$1 state=$2 pid=$3 line account_uid=''
+    while IFS= read -r line; do
+        [[ "$line" == "$state"[[:space:]]* ]] || continue
+        if [[ "$line" == *"pid=$pid,"* ]]; then return 0; fi
+        [[ "$line" != *'pid='* ]] || continue
+        # 受限容器可能隐藏其他 UID 的进程详情，仍可核对专用服务账号拥有的监听。
+        if [[ -z "$account_uid" ]]; then account_uid=$(id -u "$account") || return 1; fi
+        if [[ "$line" =~ [[:space:]]uid:"$account_uid"([[:space:]]|$) ]]; then return 0; fi
+    done <<< "$sockets"
+    return 1
+}
+
 is_listening() {
     local pid sockets state=LISTEN
     systemctl is-active --quiet "$unit" || return 1
@@ -383,10 +406,10 @@ is_listening() {
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     sockets=$(port_sockets) || return 1
     [[ "$transport" == TCP ]] || state=UNCONN
-    grep -Eq "^$state[[:space:]].*pid=$pid," <<< "$sockets" || return 1
+    matches_listener "$sockets" "$state" "$pid" || return 1
     if [[ "$host" == *:* || -n "$secondary" ]]; then
         sockets=$(port_sockets 6) || return 1
-        grep -Eq "^$state[[:space:]].*pid=$pid," <<< "$sockets" || return 1
+        matches_listener "$sockets" "$state" "$pid" || return 1
     fi
 }
 
@@ -444,8 +467,16 @@ print_links() {
     printf '将返回地址与 VPS 上直连同一网址所得的出口地址比对。仅有 IPv6 出口时，两端均改用 https://api6.ipify.org。\n' >&3
 }
 
+check_service_unit() {
+    local fragment drop_ins
+    fragment=$(systemctl show --property=FragmentPath --value "$unit") || die '无法读取服务单元。'
+    [[ "$fragment" == "$unit_file" ]] || die "服务 $unit 来自其他单元文件。"
+    drop_ins=$(systemctl show --property=DropInPaths --value "$unit") || die '无法检查服务覆盖配置。'
+    [[ -z "$drop_ins" ]] || die "服务 $unit 包含额外的 systemd 覆盖配置。"
+}
+
 load_installation() {
-    local path fragment drop_ins
+    local path
     local -a state
     pin=''
     [[ -d "$target" && ! -L "$target" && -f "$unit_file" && ! -L "$unit_file" ]] || die '安装目录或服务单元不完整。'
@@ -453,17 +484,19 @@ load_installation() {
         [[ -f "$target/$path" && ! -L "$target/$path" ]] || die '已有安装文件不完整。'
     done
     cmp -s "$unit_file" <(write_unit) || die '现有服务单元与脚本管理的单元不匹配。'
-    fragment=$(systemctl show --property=FragmentPath --value "$unit") || die '无法读取现有服务单元。'
-    [[ "$fragment" == "$unit_file" ]] || die '当前运行的服务来自其他单元文件。'
-    drop_ins=$(systemctl show --property=DropInPaths --value "$unit") || die '无法检查服务覆盖配置。'
-    [[ -z "$drop_ins" ]] || die '现有服务包含额外的 systemd 覆盖配置。'
+    check_service_unit
     mapfile -t state < "$target/state"
     [[ ${#state[@]} == 7 && ${state[0]} == vps-proxy-installer-1 ]] || die '无法识别安装状态。'
     host=$(normalize_host "${state[1]}") || die '已保存的连接地址无效。'
     secondary=''
+    unavailable_secondary=''
     if [[ -n ${state[2]} ]]; then
         secondary=$(normalize_host "${state[2]}") || die '已保存的 IPv6 无效。'
         [[ "$secondary" == *:* ]] || die '已保存的 IPv6 无效。'
+        if ! has_local_ipv6 to "$secondary/128"; then
+            unavailable_secondary=$secondary
+            secondary=''
+        fi
     fi
     listen_port=$(normalize_port "${state[3]}") || die '已保存的监听端口无效。'
     public_port=$(normalize_port "${state[4]}") || die '已保存的公网端口无效。'
@@ -500,7 +533,7 @@ PY
 }
 
 cleanup() {
-    local status=$? preserve=0
+    local status=$? preserve=0 account_record account_comment
     trap - EXIT
     trap '' INT TERM HUP
     set +e
@@ -522,9 +555,12 @@ cleanup() {
                 rm -f -- "$target/"{server,config.json,cert.pem,key.pem,state} || preserve=1
                 rmdir -- "$target" || preserve=1
             fi
-            if (( account_created )); then
-                if getent passwd "$account" >/dev/null; then userdel "$account" || preserve=1; fi
-                if getent group "$account" >/dev/null; then groupdel "$account" || preserve=1; fi
+            if [[ -n "$account_marker" ]] && account_record=$(getent passwd "$account"); then
+                IFS=: read -r _ _ _ _ account_comment _ _ <<< "$account_record"
+                if [[ "$account_comment" == "$account_marker" ]]; then
+                    userdel "$account" || preserve=1
+                    if getent group "$account" >/dev/null; then groupdel "$account" || preserve=1; fi
+                fi
             fi
             if (( preserve )); then printf '本次安装有残留，请检查上方错误。\n' >&2; fi
         fi
@@ -535,7 +571,7 @@ cleanup() {
 }
 
 install_service() {
-    local stage='' stage_inode='' temp_unit='' account_created=0 start_attempted=0 enable_attempted=0
+    local stage='' stage_inode='' temp_unit='' account_marker='' start_attempted=0 enable_attempted=0
     # EXIT trap 在当前子 shell 内运行，安装临时状态在陷阱执行时仍可读。
     trap cleanup EXIT
     trap 'exit 130' INT
@@ -558,8 +594,9 @@ install_service() {
     # 下载后再查一次端口及同类服务，避免覆盖安装等待期间出现的配置。
     check_conflicts
     check_port
-    useradd --system --user-group --no-create-home --home-dir "$target" --shell /usr/sbin/nologin "$account"
-    account_created=1
+    # 标记由本次安装创建的账号。即使 useradd 刚完成便收到信号，回退也可识别其来源。
+    account_marker="VPS Proxy Installer ${stage##*/}"
+    useradd --system --user-group --no-create-home --comment "$account_marker" --home-dir "$target" --shell /usr/sbin/nologin "$account"
     chgrp -- "$account" "$stage" "$stage/"{config.json,cert.pem,key.pem}
     chmod 0750 "$stage"
     chmod 0640 "$stage/"{config.json,cert.pem,key.pem}
@@ -574,6 +611,7 @@ install_service() {
     chmod 0644 "$temp_unit"
     ln -T -- "$temp_unit" "$unit_file" || die "无法创建 $unit_file。"
     systemctl daemon-reload
+    check_service_unit
     start_attempted=1
     systemctl start "$unit"
     wait_for_listener
