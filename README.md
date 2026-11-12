@@ -1,9 +1,9 @@
 # VPS 代理一键部署
 
-在带 systemd 的 Debian 13 LXC 或 Ubuntu 22.04 amd64 VPS 上，用 root 的 Bash 运行。下载地址固定到已验证的脚本提交。
+在带 systemd 的 Debian 12/13 LXC 或 Ubuntu 22.04 amd64 VPS 上，用 root 的 Bash 运行。下载地址固定到已验证的脚本提交。
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/227aad95191b0c5aa4475c34ab88489556f06152/install.sh) && bash <(printf '%s\n' "$installer"))
+(installer=$(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/12d5f65efe8f090f94dbc4f35cb7243ed24aa84a/install.sh) && bash <(printf '%s\n' "$installer"))
 ```
 
 - `1` 安装 VLESS + TCP + XTLS Vision + TLS，使用 [Xray v26.11.9](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9)。
@@ -11,7 +11,7 @@
 - `3` 同时部署两种协议。分别填写两组设置，确认一次。两项就绪后，终端会连续显示两条主链接，一条 `vless://` 和一条 `hysteria2://`。
 - `0` 退出。
 
-VPS 需能访问 GitHub Release。脚本从官方 Release 下载 amd64 文件并核验 SHA-256。运行前准备 Bash、`curl`、`ca-certificates`、`openssl`、`iproute2`、`util-linux`、`procps` 和 `python3`。VLESS 还需要 `unzip`。缺少命令时，按终端提示补齐后重跑。
+VPS 需能访问 GitHub Release。脚本从官方 Release 下载 amd64 文件并核验 SHA-256。运行前准备 Bash、`curl`、`ca-certificates`、`openssl`、`iproute2`、`util-linux`、`procps` 和 `python3`。VLESS 还需要 `unzip`。缺少命令时，按终端提示补齐后重跑。Debian 12、Debian 13 和 Ubuntu 22.04 均要求使用正常运行的 systemd。
 
 ## 地址和端口
 
@@ -46,3 +46,4 @@ curl -fsS --max-time 20 --noproxy '' --proxy socks5h://127.0.0.1:10808 https://a
 ```
 
 在 VPS 上直连运行 `curl -fsS --noproxy '*' https://api.ipify.org` 获取出口 IP。若代理请求成功并返回 VPS 的出口 IP，即验证了公网入口、协议握手、认证和转发。NAT VPS 的公网入口与出口 IP 可能不同。若 VPS 只有 IPv6 出口，两条命令都改用 `https://api6.ipify.org`。Windows 可在命令提示符用 `curl.exe` 执行，把 `''` 换为 `""`。 [IP 查询接口](https://www.ipify.org/#api)
+
