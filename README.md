@@ -3,7 +3,7 @@
 在带 systemd 的 Debian 13 LXC 或 Ubuntu 22.04 amd64 VPS 上，用 root 的 Bash 运行。下载地址固定到已验证的脚本提交。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/545def087537c6a45238e4ad9d77f5316c49e909/install.sh)
+(installer=$(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/227aad95191b0c5aa4475c34ab88489556f06152/install.sh) && bash <(printf '%s\n' "$installer"))
 ```
 
 - `1` 安装 VLESS + TCP + XTLS Vision + TLS，使用 [Xray v26.11.9](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9)。
@@ -22,7 +22,7 @@ VPS 需能访问 GitHub Release。脚本从官方 Release 下载 amd64 文件并
 | Hysteria 2 | 443/UDP | 公网地址的 40050/UDP | 公网 40050/UDP → VPS 443/UDP |
 | VLESS | 81/TCP | 公网地址的 44432/TCP | 公网 44432/TCP → VPS 81/TCP |
 
-双栈可在连接地址一栏填写 `IPv4或域名 IPv6`，以空格分隔。脚本另导出一条使用监听端口的 IPv6 直连链接。只填一个 IPv6 地址时，链接使用所填公网端口。链接里的 IPv6 字面地址会加方括号。
+双栈可在连接地址一栏填写 `IPv4或域名 IPv6`，以空格分隔。附加 IPv6 须已分配给本机，脚本另导出一条使用监听端口的直连链接。复用服务时，如果该地址已不可用，只显示主链接。只填一个 IPv6 地址时，链接使用所填公网端口。链接里的 IPv6 字面地址会加方括号。
 
 ## TLS 与导入
 
