@@ -130,8 +130,8 @@ check_environment() {
     # shellcheck source=/etc/os-release
     . /etc/os-release
     case "$ID:$VERSION_ID" in
-        debian:13|ubuntu:22.04) ;;
-        *) die '当前支持 Debian 13 和 Ubuntu 22.04。' ;;
+        debian:12|debian:13|ubuntu:22.04) ;;
+        *) die '当前支持 Debian 12、Debian 13 和 Ubuntu 22.04。' ;;
     esac
     local -a required=(curl openssl sha256sum python3 ss ip flock systemctl pgrep getent id useradd userdel groupdel)
     [[ "$protocol" != vless ]] || required+=(unzip)
@@ -702,3 +702,4 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi
+
