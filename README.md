@@ -3,7 +3,7 @@
 在带 systemd 的 Debian 12/13 LXC 或 Ubuntu 22.04 amd64 VPS 上，用 root 的 Bash 运行。下载地址固定到已验证的脚本提交。
 
 ```bash
-(installer=$(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/12d5f65efe8f090f94dbc4f35cb7243ed24aa84a/install.sh) && bash <(printf '%s\n' "$installer"))
+(installer=$(curl -fsSL https://raw.githubusercontent.com/jianmomo/vps-proxy-installer/023dfbaaf06044956212096e79f5388380e29825/install.sh) && bash <(printf '%s\n' "$installer"))
 ```
 
 - `1` 安装 VLESS + TCP + XTLS Vision + TLS，使用 [Xray v26.11.9](https://github.com/XTLS/Xray-core/releases/tag/v26.11.9)。
@@ -46,4 +46,3 @@ curl -fsS --max-time 20 --noproxy '' --proxy socks5h://127.0.0.1:10808 https://a
 ```
 
 在 VPS 上直连运行 `curl -fsS --noproxy '*' https://api.ipify.org` 获取出口 IP。若代理请求成功并返回 VPS 的出口 IP，即验证了公网入口、协议握手、认证和转发。NAT VPS 的公网入口与出口 IP 可能不同。若 VPS 只有 IPv6 出口，两条命令都改用 `https://api6.ipify.org`。Windows 可在命令提示符用 `curl.exe` 执行，把 `''` 换为 `""`。 [IP 查询接口](https://www.ipify.org/#api)
-
